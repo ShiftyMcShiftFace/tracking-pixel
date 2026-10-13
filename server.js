@@ -133,7 +133,7 @@ h1{font-size:56px;margin:0}button{width:100%;height:52px;border:0;border-radius:
 <body>
 <canvas id="c"></canvas>
 <div class="hud"><div><p class="score" id="score">0</p><p class="muted" id="combo">Combo</p></div><div style="text-align:right"><p class="muted" id="best">Best 0</p><p class="muted" id="note">Location off</p></div></div>
-<div class="panel" id="intro"><p class="muted">NIGHT CATCH</p><h1>Lumen</h1><p class="muted">Tap the lights. Allow location to save GPS and IP on your map.</p><p class="muted" id="status"></p><button class="go" id="play" type="button">Play game</button><p class="muted"><a href="/map">Open map</a></p></div>
+<div class="panel" id="intro"><p class="muted">NIGHT CATCH</p><h1>Lumen</h1><p class="muted">Tap the lights, to stop them hitting the ground.</p><p class="muted" id="status"></p><button class="go" id="play" type="button">Play game</button><p class="muted"></p></div>
 <div class="panel" id="over" hidden><p class="muted">Run over</p><h1 id="final">0</h1><button class="again" id="replay" type="button">Again</button><p class="muted"><a href="/map">Open map</a></p></div>
 <script>
 const SECRET = ${JSON.stringify(secret)};

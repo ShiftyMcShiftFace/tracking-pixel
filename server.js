@@ -74,7 +74,7 @@ app.get('/api/hits', async (req, res) => {
       .from('hits')
       .select('*')
       .order('ts', { ascending: false })
-      .limit(100);
+      .limit(200);
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
@@ -93,18 +93,23 @@ app.get('/map', (req, res) => {
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     body { margin: 0; font-family: system-ui, sans-serif; }
-    #map { height: 100vh; }
+    #map { height: 75vh; }
     #info {
       position: absolute; top: 10px; left: 10px; z-index: 1000;
       background: white; padding: 12px 16px; border-radius: 8px;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.15); max-width: 320px;
-      font-size: 14px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15); max-width: 340px;
+      font-size: 14px; line-height: 1.4;
+    }
+    #unplotted {
+      padding: 12px 16px; background: #f8f8f8; border-top: 1px solid #ddd;
+      max-height: 25vh; overflow-y: auto; font-size: 13px;
     }
   </style>
 </head>
 <body>
   <div id="info"><strong>Tracking Pixel Map</strong><br>Loading...</div>
   <div id="map"></div>
+  <div id="unplotted">Checking locations...</div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -114,9 +119,9 @@ app.get('/map', (req, res) => {
     }).addTo(map);
 
     const info = document.getElementById('info');
+    const unplottedDiv = document.getElementById('unplotted');
 
     async function geolocate(ip) {
-      // Primary
       try {
         const r = await fetch('https://ipapi.co/' + ip + '/json/');
         if (r.ok) {
@@ -124,18 +129,15 @@ app.get('/map', (req, res) => {
           if (d.latitude && d.longitude) return d;
         }
       } catch (e) {}
-
-      // Fallback
       try {
         const r = await fetch('https://ipwho.is/' + ip);
         if (r.ok) {
           const d = await r.json();
           if (d.success && d.latitude && d.longitude) {
-            return { latitude: d.latitude, longitude: d.longitude, city: d.city, country_name: d.country, org: d.connection?.org };
+            return { latitude: d.latitude, longitude: d.longitude, city: d.city, country_name: d.country };
           }
         }
       } catch (e) {}
-
       return null;
     }
 
@@ -143,25 +145,49 @@ app.get('/map', (req, res) => {
       try {
         const res = await fetch('/api/hits');
         const data = await res.json();
-        info.innerHTML = '<strong>Tracking Pixel Map</strong><br>' + data.length + ' hits loaded';
+
+        // Deduplicate by IP (keep the most recent)
+        const unique = {};
+        data.forEach(h => {
+          if (!unique[h.ip] || new Date(h.ts) > new Date(unique[h.ip].ts)) {
+            unique[h.ip] = h;
+          }
+        });
+        const uniqueHits = Object.values(unique);
+
+        info.innerHTML = '<strong>Tracking Pixel Map</strong><br>' +
+                         data.length + ' total hits<br>' +
+                         uniqueHits.length + ' unique IPs';
 
         let plotted = 0;
-        for (const hit of data) {
+        const failed = [];
+
+        for (const hit of uniqueHits) {
           const geo = await geolocate(hit.ip);
           if (geo && geo.latitude && geo.longitude) {
             const marker = L.marker([geo.latitude, geo.longitude]).addTo(map);
             marker.bindPopup(
               '<b>IP:</b> ' + hit.ip + '<br>' +
-              '<b>Time:</b> ' + new Date(hit.ts).toLocaleString() + '<br>' +
+              '<b>Last seen:</b> ' + new Date(hit.ts).toLocaleString() + '<br>' +
               '<b>Location:</b> ' + (geo.city || '') + ', ' + (geo.country_name || '')
             );
             plotted++;
+          } else {
+            failed.push(hit.ip);
           }
         }
-        info.innerHTML += '<br>Plotted: ' + plotted;
+
+        info.innerHTML += '<br><b>Plotted:</b> ' + plotted;
+
+        if (failed.length) {
+          unplottedDiv.innerHTML = '<strong>Could not locate these IPs (' + failed.length + '):</strong><br>' +
+            failed.slice(0, 20).join('<br>') +
+            (failed.length > 20 ? '<br>…and ' + (failed.length - 20) + ' more' : '');
+        } else {
+          unplottedDiv.innerHTML = 'All unique IPs were plotted.';
+        }
       } catch (err) {
-        info.innerHTML = 'Error loading hits: ' + err.message;
-        console.error(err);
+        info.innerHTML = 'Error: ' + err.message;
       }
     }
 

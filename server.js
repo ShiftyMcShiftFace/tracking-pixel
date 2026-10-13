@@ -93,23 +93,53 @@ app.get('/map', (req, res) => {
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     body { margin: 0; font-family: system-ui, sans-serif; }
-    #map { height: 75vh; }
+    #map { height: 60vh; }
     #info {
       position: absolute; top: 10px; left: 10px; z-index: 1000;
       background: white; padding: 12px 16px; border-radius: 8px;
       box-shadow: 0 2px 10px rgba(0,0,0,0.15); max-width: 340px;
       font-size: 14px; line-height: 1.4;
     }
-    #unplotted {
-      padding: 12px 16px; background: #f8f8f8; border-top: 1px solid #ddd;
-      max-height: 25vh; overflow-y: auto; font-size: 13px;
+    #table-container {
+      padding: 16px;
+      background: #fafafa;
+      border-top: 1px solid #ddd;
+      max-height: 40vh;
+      overflow-y: auto;
     }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 1px solid #eee;
+    }
+    th {
+      background: #f0f0f0;
+      position: sticky;
+      top: 0;
+    }
+    tr:hover { background: #f5f5f5; }
   </style>
 </head>
 <body>
   <div id="info"><strong>Tracking Pixel Map</strong><br>Loading...</div>
   <div id="map"></div>
-  <div id="unplotted">Checking locations...</div>
+  <div id="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>IP Address</th>
+          <th>User-Agent</th>
+        </tr>
+      </thead>
+      <tbody id="hits-table"></tbody>
+    </table>
+  </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -119,7 +149,7 @@ app.get('/map', (req, res) => {
     }).addTo(map);
 
     const info = document.getElementById('info');
-    const unplottedDiv = document.getElementById('unplotted');
+    const tbody = document.getElementById('hits-table');
 
     async function geolocate(ip) {
       try {
@@ -146,7 +176,7 @@ app.get('/map', (req, res) => {
         const res = await fetch('/api/hits');
         const data = await res.json();
 
-        // Deduplicate by IP (keep the most recent)
+        // Deduplicate by IP for the map (keep most recent)
         const unique = {};
         data.forEach(h => {
           if (!unique[h.ip] || new Date(h.ts) > new Date(unique[h.ip].ts)) {
@@ -160,8 +190,6 @@ app.get('/map', (req, res) => {
                          uniqueHits.length + ' unique IPs';
 
         let plotted = 0;
-        const failed = [];
-
         for (const hit of uniqueHits) {
           const geo = await geolocate(hit.ip);
           if (geo && geo.latitude && geo.longitude) {
@@ -172,20 +200,20 @@ app.get('/map', (req, res) => {
               '<b>Location:</b> ' + (geo.city || '') + ', ' + (geo.country_name || '')
             );
             plotted++;
-          } else {
-            failed.push(hit.ip);
           }
         }
-
         info.innerHTML += '<br><b>Plotted:</b> ' + plotted;
 
-        if (failed.length) {
-          unplottedDiv.innerHTML = '<strong>Could not locate these IPs (' + failed.length + '):</strong><br>' +
-            failed.slice(0, 20).join('<br>') +
-            (failed.length > 20 ? '<br>…and ' + (failed.length - 20) + ' more' : '');
-        } else {
-          unplottedDiv.innerHTML = 'All unique IPs were plotted.';
-        }
+        // Fill the table with ALL hits
+        tbody.innerHTML = '';
+        data.forEach(hit => {
+          const tr = document.createElement('tr');
+          const time = new Date(hit.ts).toLocaleString();
+          const ua = (hit.ua || '').substring(0, 80) + ((hit.ua || '').length > 80 ? '…' : '');
+          tr.innerHTML = '<td>' + time + '</td><td>' + hit.ip + '</td><td>' + ua + '</td>';
+          tbody.appendChild(tr);
+        });
+
       } catch (err) {
         info.innerHTML = 'Error: ' + err.message;
       }

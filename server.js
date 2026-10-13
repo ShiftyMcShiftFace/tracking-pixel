@@ -22,30 +22,75 @@ const PIXEL = Buffer.from(
   'base64'
 );
 
-// Simple IP geolocation helper (server-side)
+// IP geolocation with fallback
 async function lookupIP(ip) {
-  return new Promise((resolve) => {
-    if (!ip || ip.startsWith('127.') || ip.startsWith('192.168.') || ip.startsWith('10.')) {
-      return resolve(null);
-    }
-    const url = `https://ipapi.co/${ip}/json/`;
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.latitude && json.longitude) {
-            resolve({ lat: json.latitude, lon: json.longitude, city: json.city, country: json.country_name });
-          } else {
+  if (!ip || ip.startsWith('127.') || ip.startsWith('192.168.') || ip.startsWith('10.') || ip === '::1') {
+    console.log('Skipping private/local IP:', ip);
+    return null;
+  }
+
+  // Primary: ipapi.co
+  try {
+    const result = await new Promise((resolve) => {
+      https.get(`https://ipapi.co/${ip}/json/`, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.latitude && json.longitude) {
+              resolve({ lat: json.latitude, lon: json.longitude, city: json.city, country: json.country_name, source: 'ipapi' });
+            } else {
+              console.log('ipapi.co no coords for', ip, json.error || '');
+              resolve(null);
+            }
+          } catch (e) {
+            console.log('ipapi.co parse error for', ip);
             resolve(null);
           }
-        } catch (e) {
-          resolve(null);
-        }
+        });
+      }).on('error', (err) => {
+        console.log('ipapi.co error for', ip, err.message);
+        resolve(null);
       });
-    }).on('error', () => resolve(null));
-  });
+    });
+    if (result) return result;
+  } catch (e) {
+    console.log('ipapi.co exception:', e.message);
+  }
+
+  // Fallback: ipwho.is
+  try {
+    const result = await new Promise((resolve) => {
+      https.get(`https://ipwho.is/${ip}`, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.success && json.latitude && json.longitude) {
+              resolve({ lat: json.latitude, lon: json.longitude, city: json.city, country: json.country, source: 'ipwho' });
+            } else {
+              console.log('ipwho.is failed for', ip, json.message || '');
+              resolve(null);
+            }
+          } catch (e) {
+            console.log('ipwho.is parse error for', ip);
+            resolve(null);
+          }
+        });
+      }).on('error', (err) => {
+        console.log('ipwho.is error for', ip, err.message);
+        resolve(null);
+      });
+    });
+    if (result) return result;
+  } catch (e) {
+    console.log('ipwho.is exception:', e.message);
+  }
+
+  console.log('All geolocation services failed for IP:', ip);
+  return null;
 }
 
 function sendDiscordNotification(entry) {
@@ -67,6 +112,7 @@ function sendDiscordNotification(entry) {
   } catch (err) {}
 }
 
+// Tracking pixel
 app.get('/pixel.gif', async (req, res) => {
   if (req.query.t !== SECRET) return res.status(404).end();
 
@@ -78,8 +124,8 @@ app.get('/pixel.gif', async (req, res) => {
     query: req.query
   };
 
-  // Look up approximate location on the server
   const geo = await lookupIP(ip);
+  if (geo) console.log('Geo success for', ip, 'via', geo.source, geo.lat, geo.lon);
 
   try {
     const { error } = await supabase.from('hits').insert([{
@@ -102,6 +148,7 @@ app.get('/pixel.gif', async (req, res) => {
   res.send(PIXEL);
 });
 
+// GPS report endpoint
 app.post('/report', async (req, res) => {
   const secret = req.query.t || req.body.t;
   if (secret !== SECRET) return res.status(403).json({ error: 'bad secret' });
@@ -139,6 +186,7 @@ app.get('/api/hits', async (req, res) => {
   }
 });
 
+// Auto location page
 app.get('/locate', (req, res) => {
   const secret = req.query.t || 'test123';
   res.send(`<!DOCTYPE html>
@@ -183,6 +231,7 @@ app.get('/locate', (req, res) => {
 </html>`);
 });
 
+// Map page
 app.get('/map', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>

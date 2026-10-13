@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 3000;
 const SECRET = process.env.PIXEL_SECRET || 'test123';
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || '';
 
-// Supabase
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -41,7 +40,6 @@ function sendDiscordNotification(entry) {
   } catch (err) {}
 }
 
-// Tracking pixel
 app.get('/pixel.gif', async (req, res) => {
   if (req.query.t !== SECRET) return res.status(404).end();
 
@@ -52,7 +50,6 @@ app.get('/pixel.gif', async (req, res) => {
     query: req.query
   };
 
-  // Save to Supabase
   try {
     await supabase.from('hits').insert([{
       ts: entry.ts,
@@ -64,16 +61,13 @@ app.get('/pixel.gif', async (req, res) => {
     console.error('Supabase insert error:', err.message);
   }
 
-  // Optional file log
   try { fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n'); } catch (err) {}
-
   sendDiscordNotification(entry);
 
   res.set({ 'Content-Type': 'image/gif', 'Content-Length': PIXEL.length, 'Cache-Control': 'no-store' });
   res.send(PIXEL);
 });
 
-// API for the map
 app.get('/api/hits', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -89,7 +83,6 @@ app.get('/api/hits', async (req, res) => {
   }
 });
 
-// Map page (same as before)
 app.get('/map', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
@@ -99,36 +92,79 @@ app.get('/map', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
-    body { margin: 0; font-family: sans-serif; }
+    body { margin: 0; font-family: system-ui, sans-serif; }
     #map { height: 100vh; }
-    #info { position: absolute; top: 10px; left: 10px; z-index: 1000; background: white; padding: 10px 15px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); max-width: 300px; }
+    #info {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: white; padding: 12px 16px; border-radius: 8px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.15); max-width: 320px;
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
-  <div id="info"><strong>Tracking Pixel Map</strong><br>Loading hits...</div>
+  <div id="info"><strong>Tracking Pixel Map</strong><br>Loading...</div>
   <div id="map"></div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const map = L.map('map').setView([20, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
     const info = document.getElementById('info');
+
+    async function geolocate(ip) {
+      // Primary
+      try {
+        const r = await fetch('https://ipapi.co/' + ip + '/json/');
+        if (r.ok) {
+          const d = await r.json();
+          if (d.latitude && d.longitude) return d;
+        }
+      } catch (e) {}
+
+      // Fallback
+      try {
+        const r = await fetch('https://ipwho.is/' + ip);
+        if (r.ok) {
+          const d = await r.json();
+          if (d.success && d.latitude && d.longitude) {
+            return { latitude: d.latitude, longitude: d.longitude, city: d.city, country_name: d.country, org: d.connection?.org };
+          }
+        }
+      } catch (e) {}
+
+      return null;
+    }
+
     async function loadHits() {
       try {
         const res = await fetch('/api/hits');
         const data = await res.json();
         info.innerHTML = '<strong>Tracking Pixel Map</strong><br>' + data.length + ' hits loaded';
+
+        let plotted = 0;
         for (const hit of data) {
-          try {
-            const geoRes = await fetch('https://ipapi.co/' + hit.ip + '/json/');
-            const geo = await geoRes.json();
-            if (geo.latitude && geo.longitude) {
-              const marker = L.marker([geo.latitude, geo.longitude]).addTo(map);
-              marker.bindPopup('<b>IP:</b> ' + hit.ip + '<br><b>Time:</b> ' + new Date(hit.ts).toLocaleString() + '<br><b>Location:</b> ' + (geo.city || '') + ', ' + (geo.country_name || ''));
-            }
-          } catch (e) {}
+          const geo = await geolocate(hit.ip);
+          if (geo && geo.latitude && geo.longitude) {
+            const marker = L.marker([geo.latitude, geo.longitude]).addTo(map);
+            marker.bindPopup(
+              '<b>IP:</b> ' + hit.ip + '<br>' +
+              '<b>Time:</b> ' + new Date(hit.ts).toLocaleString() + '<br>' +
+              '<b>Location:</b> ' + (geo.city || '') + ', ' + (geo.country_name || '')
+            );
+            plotted++;
+          }
         }
-      } catch (err) { info.innerHTML = 'Error loading hits'; }
+        info.innerHTML += '<br>Plotted: ' + plotted;
+      } catch (err) {
+        info.innerHTML = 'Error loading hits: ' + err.message;
+        console.error(err);
+      }
     }
+
     loadHits();
   </script>
 </body>

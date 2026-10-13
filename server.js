@@ -52,14 +52,15 @@ app.get('/pixel.gif', async (req, res) => {
   };
 
   try {
-    await supabase.from('hits').insert([{
+    const { error } = await supabase.from('hits').insert([{
       ts: entry.ts,
       ip: entry.ip,
       ua: entry.ua,
       query: entry.query
     }]);
+    if (error) console.error('IP insert error:', error.message);
   } catch (err) {
-    console.error('Supabase insert error:', err.message);
+    console.error('Supabase IP error:', err.message);
   }
 
   try { fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n'); } catch (err) {}
@@ -70,34 +71,43 @@ app.get('/pixel.gif', async (req, res) => {
 });
 
 app.post('/report', async (req, res) => {
-  if (req.query.t !== SECRET && req.body.t !== SECRET) {
+  const secret = req.query.t || req.body.t;
+  if (secret !== SECRET) {
+    console.log('Bad secret on /report');
     return res.status(403).json({ error: 'bad secret' });
   }
 
   const { latitude, longitude, accuracy } = req.body;
+  console.log('Received GPS:', latitude, longitude);
+
   const entry = {
     ts: new Date().toISOString(),
     ip: req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress,
     ua: req.headers['user-agent'] || null,
-    latitude,
-    longitude,
+    latitude: latitude || null,
+    longitude: longitude || null,
     query: { accuracy, source: 'gps' }
   };
 
   try {
-    await supabase.from('hits').insert([{
+    const { error } = await supabase.from('hits').insert([{
       ts: entry.ts,
       ip: entry.ip,
       ua: entry.ua,
-      latitude,
-      longitude,
+      latitude: entry.latitude,
+      longitude: entry.longitude,
       query: entry.query
     }]);
+    if (error) {
+      console.error('GPS insert error:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+    console.log('GPS saved successfully');
+    res.json({ ok: true });
   } catch (err) {
-    console.error('Supabase GPS insert error:', err.message);
+    console.error('GPS exception:', err.message);
+    res.status(500).json({ error: err.message });
   }
-
-  res.json({ ok: true });
 });
 
 app.get('/api/hits', async (req, res) => {
@@ -110,12 +120,11 @@ app.get('/api/hits', async (req, res) => {
     if (error) throw error;
     res.json(data || []);
   } catch (err) {
-    console.error('Supabase fetch error:', err.message);
+    console.error('Fetch error:', err.message);
     res.status(500).json([]);
   }
 });
 
-// Auto-send location page
 app.get('/locate', (req, res) => {
   const secret = req.query.t || 'test123';
   res.send(`<!DOCTYPE html>
@@ -126,25 +135,25 @@ app.get('/locate', (req, res) => {
   <title>Location Reporter</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 480px; margin: 40px auto; padding: 20px; text-align: center; }
-    #status { margin-top: 20px; font-size: 16px; color: #333; }
+    #status { margin-top: 20px; font-size: 16px; }
   </style>
 </head>
 <body>
   <h2>Location Reporter</h2>
-  <p>This page will automatically request your location.</p>
-  <div id="status">Requesting location...</div>
-
+  <p>Automatically requesting location...</p>
+  <div id="status">Starting...</div>
   <script>
     const status = document.getElementById('status');
     const secret = ${JSON.stringify(secret)};
 
     function sendLocation() {
       if (!navigator.geolocation) {
-        status.textContent = 'Geolocation not supported on this device';
+        status.textContent = 'Geolocation not supported';
         return;
       }
-
+      status.textContent = 'Requesting location...';
       navigator.geolocation.getCurrentPosition(async pos => {
+        status.textContent = 'Got location, sending...';
         const payload = {
           t: secret,
           latitude: pos.coords.latitude,
@@ -157,27 +166,26 @@ app.get('/locate', (req, res) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
           });
+          const text = await r.text();
           if (r.ok) {
-            status.textContent = 'Location sent ✓';
+            status.textContent = 'Location sent successfully';
           } else {
-            status.textContent = 'Failed to send location';
+            status.textContent = 'Server error: ' + text;
           }
         } catch (e) {
-          status.textContent = 'Network error';
+          status.textContent = 'Network error: ' + e.message;
         }
       }, err => {
-        status.textContent = 'Permission denied or error: ' + err.message;
+        status.textContent = 'Location error: ' + err.message;
       }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
     }
 
-    // Auto-start as soon as the page loads
     sendLocation();
   </script>
 </body>
 </html>`);
 });
 
-// Map page (unchanged from previous version that shows GPS + IP)
 app.get('/map', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
@@ -195,14 +203,10 @@ app.get('/map', (req, res) => {
       box-shadow: 0 2px 10px rgba(0,0,0,0.15); max-width: 340px;
       font-size: 14px; line-height: 1.4;
     }
-    #table-container {
-      padding: 16px; background: #fafafa; border-top: 1px solid #ddd;
-      max-height: 40vh; overflow-y: auto;
-    }
+    #table-container { padding: 16px; background: #fafafa; border-top: 1px solid #ddd; max-height: 40vh; overflow-y: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
     th { background: #f0f0f0; position: sticky; top: 0; }
-    tr:hover { background: #f5f5f5; }
   </style>
 </head>
 <body>
@@ -210,24 +214,14 @@ app.get('/map', (req, res) => {
   <div id="map"></div>
   <div id="table-container">
     <table>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>IP / GPS</th>
-          <th>Details</th>
-        </tr>
-      </thead>
+      <thead><tr><th>Time</th><th>Type</th><th>IP</th><th>Coords / UA</th></tr></thead>
       <tbody id="hits-table"></tbody>
     </table>
   </div>
-
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const map = L.map('map').setView([20, 0], 2);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap'
-    }).addTo(map);
-
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
     const info = document.getElementById('info');
     const tbody = document.getElementById('hits-table');
 
@@ -239,15 +233,6 @@ app.get('/map', (req, res) => {
           if (d.latitude && d.longitude) return d;
         }
       } catch (e) {}
-      try {
-        const r = await fetch('https://ipwho.is/' + ip);
-        if (r.ok) {
-          const d = await r.json();
-          if (d.success && d.latitude && d.longitude) {
-            return { latitude: d.latitude, longitude: d.longitude, city: d.city, country_name: d.country };
-          }
-        }
-      } catch (e) {}
       return null;
     }
 
@@ -255,54 +240,33 @@ app.get('/map', (req, res) => {
       try {
         const res = await fetch('/api/hits');
         const data = await res.json();
-
-        info.innerHTML = '<strong>Tracking Pixel Map</strong><br>' + data.length + ' hits';
-
         let gpsCount = 0;
-        for (const hit of data) {
-          let lat = hit.latitude;
-          let lon = hit.longitude;
-          let label = 'IP estimate';
-
-          if (lat && lon) {
-            gpsCount++;
-            label = 'GPS';
-          } else {
-            const geo = await geolocate(hit.ip);
-            if (geo && geo.latitude && geo.longitude) {
-              lat = geo.latitude;
-              lon = geo.longitude;
-            }
-          }
-
-          if (lat && lon) {
-            const marker = L.marker([lat, lon]).addTo(map);
-            marker.bindPopup(
-              '<b>' + label + '</b><br>' +
-              '<b>IP:</b> ' + hit.ip + '<br>' +
-              '<b>Time:</b> ' + new Date(hit.ts).toLocaleString()
-            );
-          }
-        }
-        info.innerHTML += '<br>GPS points: ' + gpsCount;
 
         tbody.innerHTML = '';
-        data.forEach(hit => {
-          const tr = document.createElement('tr');
+        for (const hit of data) {
           const time = new Date(hit.ts).toLocaleString();
-          const type = (hit.latitude && hit.longitude) ? 'GPS' : 'IP';
-          const details = (hit.latitude && hit.longitude)
-            ? hit.latitude.toFixed(5) + ', ' + hit.longitude.toFixed(5)
-            : (hit.ua || '').substring(0, 60);
-          tr.innerHTML = '<td>' + time + '</td><td>' + type + ' – ' + hit.ip + '</td><td>' + details + '</td>';
-          tbody.appendChild(tr);
-        });
+          const isGps = hit.latitude != null && hit.longitude != null;
+          if (isGps) gpsCount++;
 
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td>' + time + '</td><td>' + (isGps ? 'GPS' : 'IP') + '</td><td>' + hit.ip + '</td><td>' +
+            (isGps ? hit.latitude.toFixed(5) + ', ' + hit.longitude.toFixed(5) : (hit.ua || '').substring(0, 50)) + '</td>';
+          tbody.appendChild(tr);
+
+          let lat = hit.latitude, lon = hit.longitude, label = 'GPS';
+          if (!isGps) {
+            const geo = await geolocate(hit.ip);
+            if (geo) { lat = geo.latitude; lon = geo.longitude; label = 'IP estimate'; }
+          }
+          if (lat && lon) {
+            L.marker([lat, lon]).addTo(map).bindPopup(label + '<br>' + hit.ip + '<br>' + time);
+          }
+        }
+        info.innerHTML = '<strong>Tracking Pixel Map</strong><br>' + data.length + ' hits<br>GPS points: ' + gpsCount;
       } catch (err) {
         info.innerHTML = 'Error: ' + err.message;
       }
     }
-
     loadHits();
   </script>
 </body>

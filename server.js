@@ -6,21 +6,24 @@ const https = require('https');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== CHANGE THESE TWO VALUES =====
-const SECRET = process.env.PIXEL_SECRET || 'Im-gonna-find-you-there-you-are';
-const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || 'https://discord.com/api/webhooks/1559584885478391898/W-gXT43UoDrSpcuKXiP-aklz2E_Y0RzwLxGlb4lVIW3BJD7VZgPBivUgkn80NrBq-IBV';
-// ==================================
+const SECRET = process.env.PIXEL_SECRET || 'test123';
+const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || '';
 
 const LOG_FILE = path.join(__dirname, 'pixel-log.jsonl');
 
-// 1×1 transparent GIF
 const PIXEL = Buffer.from(
   'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
   'base64'
 );
 
 function sendDiscordNotification(entry) {
-  if (!DISCORD_WEBHOOK || DISCORD_WEBHOOK.includes('PASTE_YOUR')) return;
+  console.log('Attempting to send Discord notification...');
+  console.log('Webhook present:', !!DISCORD_WEBHOOK);
+
+  if (!DISCORD_WEBHOOK) {
+    console.log('No DISCORD_WEBHOOK set – skipping');
+    return;
+  }
 
   const content = {
     content: `📍 **Pixel Hit**\n` +
@@ -32,31 +35,44 @@ function sendDiscordNotification(entry) {
 
   const data = JSON.stringify(content);
 
-  const url = new URL(DISCORD_WEBHOOK);
-  const options = {
-    hostname: url.hostname,
-    path: url.pathname + url.search,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Length': data.length
-    }
-  };
+  try {
+    const url = new URL(DISCORD_WEBHOOK);
 
-  const req = https.request(options, (res) => {
-    // optional
-  });
+    const options = {
+      hostname: url.hostname,
+      path: url.pathname + url.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(data)
+      }
+    };
 
-  req.on('error', (err) => {
-    console.error('Discord error:', err.message);
-  });
+    const req = https.request(options, (res) => {
+      console.log('Discord response status:', res.statusCode);
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode !== 204) {
+          console.log('Discord response body:', body);
+        }
+      });
+    });
 
-  req.write(data);
-  req.end();
+    req.on('error', (err) => {
+      console.error('Discord request error:', err.message);
+    });
+
+    req.write(data);
+    req.end();
+  } catch (err) {
+    console.error('Discord setup error:', err.message);
+  }
 }
 
 app.get('/pixel.gif', (req, res) => {
   if (req.query.t !== SECRET) {
+    console.log('Wrong secret – returning 404');
     return res.status(404).end();
   }
 
@@ -68,14 +84,14 @@ app.get('/pixel.gif', (req, res) => {
     query: req.query
   };
 
-  // Save to log file
+  console.log('Pixel hit from IP:', entry.ip);
+
   try {
     fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
   } catch (err) {
     console.error('Log write error:', err.message);
   }
 
-  // Send Discord notification
   sendDiscordNotification(entry);
 
   res.set({

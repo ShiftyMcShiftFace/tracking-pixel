@@ -7,8 +7,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ===== CHANGE THESE TWO VALUES =====
-const SECRET = process.env.PIXEL_SECRET || 'my-super-secret-token-change-this-now-123456';
-const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || 'PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE';
+const SECRET = process.env.PIXEL_SECRET || 'Im-gonna-find-you-there-you-are';
+const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || 'https://discord.com/api/webhooks/1559584885478391898/W-gXT43UoDrSpcuKXiP-aklz2E_Y0RzwLxGlb4lVIW3BJD7VZgPBivUgkn80NrBq-IBV';
 // ==================================
 
 const LOG_FILE = path.join(__dirname, 'pixel-log.jsonl');

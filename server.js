@@ -1,12 +1,15 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CHANGE THIS to a long random string (at least 32 characters)
-const SECRET = process.env.PIXEL_SECRET || 'Im-gonna-find-you-there-you-are';
+// ===== CHANGE THESE TWO VALUES =====
+const SECRET = process.env.PIXEL_SECRET || 'my-super-secret-token-change-this-now-123456';
+const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK || 'PASTE_YOUR_DISCORD_WEBHOOK_URL_HERE';
+// ==================================
 
 const LOG_FILE = path.join(__dirname, 'pixel-log.jsonl');
 
@@ -16,8 +19,43 @@ const PIXEL = Buffer.from(
   'base64'
 );
 
+function sendDiscordNotification(entry) {
+  if (!DISCORD_WEBHOOK || DISCORD_WEBHOOK.includes('PASTE_YOUR')) return;
+
+  const content = {
+    content: `📍 **Pixel Hit**\n` +
+             `**Time:** ${entry.ts}\n` +
+             `**IP:** ${entry.ip}\n` +
+             `**User-Agent:** ${entry.ua || 'unknown'}\n` +
+             `**Extra:** ${JSON.stringify(entry.query)}`
+  };
+
+  const data = JSON.stringify(content);
+
+  const url = new URL(DISCORD_WEBHOOK);
+  const options = {
+    hostname: url.hostname,
+    path: url.pathname + url.search,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': data.length
+    }
+  };
+
+  const req = https.request(options, (res) => {
+    // optional
+  });
+
+  req.on('error', (err) => {
+    console.error('Discord error:', err.message);
+  });
+
+  req.write(data);
+  req.end();
+}
+
 app.get('/pixel.gif', (req, res) => {
-  // Simple secret check
   if (req.query.t !== SECRET) {
     return res.status(404).end();
   }
@@ -30,8 +68,15 @@ app.get('/pixel.gif', (req, res) => {
     query: req.query
   };
 
-  // Write one line to the log file
-  fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
+  // Save to log file
+  try {
+    fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
+  } catch (err) {
+    console.error('Log write error:', err.message);
+  }
+
+  // Send Discord notification
+  sendDiscordNotification(entry);
 
   res.set({
     'Content-Type': 'image/gif',
@@ -43,7 +88,6 @@ app.get('/pixel.gif', (req, res) => {
   res.send(PIXEL);
 });
 
-// Simple status page so you can check the server is alive
 app.get('/', (req, res) => {
   res.send('Tracking pixel server is running. Use /pixel.gif?t=YOUR_SECRET');
 });

